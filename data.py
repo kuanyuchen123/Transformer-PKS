@@ -84,7 +84,8 @@ class PersonaDataset(Dataset):
         for lines in K:
             src_k = list()
             for line in lines:
-                line.extend([params.PAD] * (k_len - len(line)))
+                line.insert(0, params.SEP)
+                line.extend([params.PAD] * (k_len - len(line) + 1))
                 src_k.append(line)
 
             src_K.append(src_k)

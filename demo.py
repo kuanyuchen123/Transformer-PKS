@@ -1,8 +1,11 @@
 import torch
 import params
 from tokenizers import Tokenizer
-from model import create_pad_mask, get_seq_mask, Transformer_Encoder, Transformer_Decoder, Knowledge_Encoder, Knowledge_Manager
+from model import create_pad_mask, get_seq_mask, Transformer_Encoder, Transformer_Decoder, Knowledge_Manager
 from beam import beam_decode
+import os 
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 print( "Set device to {}".format(params.device))
 
@@ -17,11 +20,6 @@ decoder = Transformer_Decoder(
     num_decoder_layers=params.n_decode_layer, dropout_p=params.dropout
 ).to(params.device)
 
-knowledge_encoder = Knowledge_Encoder(
-    num_tokens=params.n_vocab, dim_model=params.dim_model, num_heads=params.n_head, \
-    num_encoder_layers=params.n_encode_layer, dropout_p=params.dropout
-).to(params.device)
-
 knowledge_manager = Knowledge_Manager(
     X_seq_len=params.X_seq_len,
     Y_seq_len=params.Y_seq_len,
@@ -31,12 +29,10 @@ knowledge_manager = Knowledge_Manager(
 
 encoder.load_state_dict(torch.load("./checkpoint/encoder_0.pt"))
 decoder.load_state_dict(torch.load("./checkpoint/decoder_0.pt"))
-knowledge_encoder.load_state_dict(torch.load("./checkpoint/k_encoder_0.pt"))
 knowledge_manager.load_state_dict(torch.load("./checkpoint/k_manager_0.pt"))
 
 encoder.eval()
 decoder.eval()
-knowledge_encoder.eval()
 knowledge_manager.eval()
 
 tokenizer = Tokenizer.from_file("./vocab.json")
@@ -49,7 +45,7 @@ for i in range(3) :
 
 tokenized_K = torch.tensor([tokenizer.encode_batch(K)[i].ids for i in range(3)]).unsqueeze(0).to(params.device)
 K_pad_mask = create_pad_mask(tokenized_K, params.PAD).to(params.device)
-K_hidden = knowledge_encoder(tokenized_K, K_pad_mask)
+K_hidden = encoder(tokenized_K, K_pad_mask)
 
 print( "Start chatting with our chatbot!" )
 while True :

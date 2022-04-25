@@ -5,7 +5,7 @@ from tokenizers.pre_tokenizers import Whitespace
 
 def tokenize():
     tokenizer = Tokenizer(WordLevel(unk_token="[UNK]"))
-    trainer = WordLevelTrainer(special_tokens=["[PAD]", "[UNK]", "[SOS]", "[EOS]"])
+    trainer = WordLevelTrainer(special_tokens=["[PAD]", "[UNK]", "[SOS]", "[EOS]", "[SEP]"])
     tokenizer.pre_tokenizer = Whitespace()
 
     data = ["./data/train.txt","./data/test.txt"]

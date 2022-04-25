@@ -44,6 +44,29 @@ def make_pad_embed_zero( embed, pad_mask ) :
         embed = torch.einsum('ijkl,ijkm -> ijkl', embed, mask)
         return embed
 
+def sample_gumbel(shape, eps=1e-20):
+    U = torch.rand(shape).to(params.device)
+    return -torch.log(-torch.log(U + eps) + eps)
+
+
+def gumbel_softmax_sample(logits, temperature):
+    y = logits + sample_gumbel(logits.size())
+    return F.softmax(y / temperature, dim=-1)
+
+
+def gumbel_softmax(logits, temperature):
+    """
+    input: [*, n_class]
+    return: [*, n_class] an one-hot vector
+    """
+    y = gumbel_softmax_sample(logits, temperature)
+    shape = y.size()
+    _, ind = y.max(dim=-1)
+    y_hard = torch.zeros_like(y).view(-1, shape[-1])
+    y_hard.scatter_(1, ind.view(-1, 1), 1)
+    y_hard = y_hard.view(*shape)
+    return (y_hard - y).detach() + y
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, dim_model, dropout_p, max_len):
@@ -88,19 +111,45 @@ class Transformer_Encoder(nn.Module):
 
     def forward(self, src, src_pad_mask=None):
         """
-        src: (n_batch, sequence length)
-        src_embeded + pos: (n_batch, sequence length, dim_model)
-        encoder_hidden: (sequence length, n_batch, dim_model)
+        Knowledge:
+            src: (n_batch, N, sequence length)
+            src_embeded: (n_batch, N, sequence length, dim_model)
+            src_hidden: (N, sequence length, n_batch, dim_model)
+        Utterence:
+            src: (n_batch, sequence length)
+            src_embeded: (n_batch, sequence length, dim_model)
+            src_hidden: (sequence length, n_batch, dim_model)
         """
 
-        src_embeded = self.embedding(src) * math.sqrt(self.dim_model)
-        src_embeded = self.positional_encoder(src_embeded)
-        
-        # src_embeded: (sequence length, n_batch, dim_model)
-        src_embeded = src_embeded.permute(1,0,2)
-        encoder_hidden = self.encoder(src_embeded, src_key_padding_mask=src_pad_mask)
+        # encode knowledge
+        if len(src.shape) == 3 :
+            n_batch = src.size(0)
+            N = src.size(1)
+            seq_len = src.size(2)
 
-        return encoder_hidden
+            src_embeded = self.embedding(src) * math.sqrt(self.dim_model)
+            src_embeded = self.positional_encoder(src_embeded)
+            # src_embeded: (N, n_batch, sequence length, dim_model)
+            src_embeded = src_embeded.transpose(0,1)
+            src_pad_mask = src_pad_mask.transpose(0,1)
+            src_hidden = torch.zeros(N, seq_len, n_batch, self.dim_model).to(params.device)
+            for i in range(N) :
+                # src_embeded_i: (n_batch, sequence length, dim_model) -> (sequence length, n_batch, dim_model)
+                src_embeded_i = src_embeded[i].permute(1,0,2)
+                src_pad_mask_i = src_pad_mask[i]
+                src_i_hidden = self.encoder(src_embeded_i, src_key_padding_mask=src_pad_mask_i)
+                src_hidden[i] = src_i_hidden
+
+            return src_hidden
+        # encode utterence
+        else :
+            src_embeded = self.embedding(src) * math.sqrt(self.dim_model)
+            src_embeded = self.positional_encoder(src_embeded)
+            # src_embeded: (sequence length, n_batch, dim_model)
+            src_embeded = src_embeded.permute(1,0,2)
+            knowledge_hidden = self.encoder(src_embeded, src_key_padding_mask=src_pad_mask)
+
+            return knowledge_hidden
 
 class Transformer_Decoder(nn.Module):
     def __init__(
@@ -145,66 +194,6 @@ class Transformer_Decoder(nn.Module):
         output = F.log_softmax(output, dim=2)
 
         return decoder_hidden, output
-
-class Knowledge_Encoder(nn.Module):
-    def __init__(
-        self,
-        num_tokens,
-        dim_model,
-        num_heads,
-        num_encoder_layers,
-        dropout_p
-    ):
-        super().__init__()
-        self.dim_model = dim_model
-        self.positional_encoder = PositionalEncoding(
-            dim_model=dim_model, dropout_p=dropout_p, max_len=5000
-        )
-        self.embedding = nn.Embedding(num_tokens, dim_model)
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=dim_model, nhead=num_heads)
-        self.encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_encoder_layers)
-
-    def forward(self, K, K_pad_mask=None):
-        """
-        Knowledge:
-            K: (n_batch, N, sequence length)
-            K_embeded: (n_batch, N, sequence length, dim_model)
-            knowledge_hidden: (N, sequence length, n_batch, dim_model)
-        Response:
-            K: (n_batch, sequence length)
-            K_embeded: (n_batch, sequence length, dim_model)
-            knowledge_hidden: (sequence length, n_batch, dim_model)
-        """
-
-        # encode knowledge
-        if len(K.shape) == 3 :
-            n_batch = K.size(0)
-            N = K.size(1)
-            seq_len = K.size(2)
-
-            K_embeded = self.embedding(K) * math.sqrt(self.dim_model)
-            K_embeded = self.positional_encoder(K_embeded)
-            # K_embeded: (N, n_batch, sequence length, dim_model)
-            K_embeded = K_embeded.transpose(0,1)
-            K_pad_mask = K_pad_mask.transpose(0,1)
-            knowledge_hidden = torch.zeros(N, seq_len, n_batch, self.dim_model).to(params.device)
-            for i in range(N) :
-                # k: (n_batch, sequence length, dim_model) -> (sequence length, n_batch, dim_model)
-                k = K_embeded[i].permute(1,0,2)
-                k_pad_mask = K_pad_mask[i]
-                k_hidden = self.encoder(k, src_key_padding_mask=k_pad_mask)
-                knowledge_hidden[i] = k_hidden
-
-            return knowledge_hidden
-        # encode response
-        else :
-            K_embeded = self.embedding(K) * math.sqrt(self.dim_model)
-            K_embeded = self.positional_encoder(K_embeded)
-            # K_embeded: (sequence length, n_batch, dim_model)
-            K_embeded = K_embeded.permute(1,0,2)
-            knowledge_hidden = self.encoder(K_embeded, src_key_padding_mask=K_pad_mask)
-
-            return knowledge_hidden
 
 class Knowledge_Manager(nn.Module):
     def __init__(
@@ -255,7 +244,7 @@ class Knowledge_Manager(nn.Module):
             posterior_logits = torch.bmm(X_cat_Y.unsqueeze(1), mean_K.transpose(1, 2)).squeeze(1)
             posterior = F.softmax(posterior_logits, dim=1)
             # K_index: (n_batch, N[one_hot])
-            K_index = F.gumbel_softmax(posterior_logits,0.0001)
+            K_index = gumbel_softmax(posterior_logits,0.8)
             # selected_K: (n_batch, sequence length, dim_model)
             selected_K = torch.einsum('abcd, ab -> acd', knowledge_hidden, K_index)
 
