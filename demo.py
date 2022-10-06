@@ -44,8 +44,9 @@ tokenizer.enable_padding(pad_id=params.PAD, length=params.K_seq_len)
 
 print("Enter 3 personas of bot: ")
 K = []
-for i in range(3) :
-    K.append(input("persona {}: ".format(i+1)).lower())
+K.append(input("Type first Knowledge: ".lower())
+K.append(input("Type second Knowledge: ".lower())
+K.append(input("Type third Knowledge: ".lower())
 
 tokenized_K = torch.tensor([tokenizer.encode_batch(K)[i].ids for i in range(3)]).unsqueeze(0).to(params.device)
 K_pad_mask = create_pad_mask(tokenized_K, params.PAD).to(params.device)
